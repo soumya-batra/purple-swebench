@@ -21,6 +21,8 @@ class Agent:
         """
         input_text = get_message_text(message)
 
+        
+
         # Replace this example code with your agent logic
 
         await updater.update_status(
