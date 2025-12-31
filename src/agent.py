@@ -21,7 +21,7 @@ class Agent:
         """
         input_text = get_message_text(message)
 
-        
+        print(f"Input > {input_text}")
 
         # Replace this example code with your agent logic
 
