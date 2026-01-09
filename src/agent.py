@@ -5,6 +5,10 @@ from a2a.utils import get_message_text, new_agent_text_message
 from messenger import Messenger
 import litellm
 from dotenv import load_dotenv
+import json
+
+RESPONSE_KEY = "action"
+CONTENT_KEY = "content"
 
 load_dotenv()
 
@@ -33,14 +37,15 @@ class Agent:
 
         self.messages.append({"content": input_text, "role": "user"})
         completion = litellm.completion(
-            model="openrouter/qwen/qwen3-coder:free", #openrouter/z-ai/glm-4.5-air:free",
+            model="openrouter/qwen/qwen3-coder:free", #"openrouter/z-ai/glm-4.5-air:free"
             messages=self.messages
         )
         response = completion.choices[0].message.content
         self.messages.append({"content": response, "role": "assistant"})
         print("response > ", response)
   
+        response_json = json.loads(response)
         await updater.add_artifact(
-            parts=[Part(root=TextPart(name="patch",text=response))],
-            name="Response",
+            name=response_json[RESPONSE_KEY],
+            parts=[Part(root=TextPart(text=response_json[CONTENT_KEY]))],
         )
