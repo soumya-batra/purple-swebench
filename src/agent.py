@@ -10,6 +10,9 @@ import json
 RESPONSE_KEY = "action"
 CONTENT_KEY = "content"
 
+BASH = "bash"
+PATCH = "patch"
+
 load_dotenv()
 
 class Agent:
@@ -43,8 +46,17 @@ class Agent:
         response = completion.choices[0].message.content
         self.messages.append({"content": response, "role": "assistant"})
         print("response > ", response)
-  
+        breakpoint()
         response_json = json.loads(response)
+
+        # Mark task state as input required if issuing bash commands,
+        # Else if issuing patch, mark it as complete and final
+        # TODO: Handle error cases - try to extract if say, plain text or return exception
+        if response_json[RESPONSE_KEY] == BASH:
+            await updater.update_status(TaskState.input_required)
+        elif response_json[RESPONSE_KEY] == PATCH:
+            await updater.complete()
+
         await updater.add_artifact(
             name=response_json[RESPONSE_KEY],
             parts=[Part(root=TextPart(text=response_json[CONTENT_KEY]))],
