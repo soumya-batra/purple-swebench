@@ -46,7 +46,6 @@ class Agent:
         response = completion.choices[0].message.content
         self.messages.append({"content": response, "role": "assistant"})
         print("response > ", response)
-        breakpoint()
         response_json = json.loads(response)
 
         # Mark task state as input required if issuing bash commands,
