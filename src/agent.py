@@ -12,6 +12,7 @@ CONTENT_KEY = "content"
 
 load_dotenv()
 
+
 class Agent:
     def __init__(self):
         self.messenger = Messenger()
@@ -37,8 +38,9 @@ class Agent:
 
         self.messages.append({"content": input_text, "role": "user"})
         completion = litellm.completion(
-            model="openrouter/qwen/qwen3-coder:free", #"openrouter/z-ai/glm-4.5-air:free"
-            messages=self.messages
+            model="openrouter/tngtech/deepseek-r1t-chimera:free", #openrouter/z-ai/glm-4.5-air:free", #"openrouter/qwen/qwen3-coder:free"
+            messages=self.messages,
+            response_format= {"type": "json_object"}
         )
         response = completion.choices[0].message.content
         self.messages.append({"content": response, "role": "assistant"})
