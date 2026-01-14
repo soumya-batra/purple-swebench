@@ -159,44 +159,28 @@ You MUST respond with a single JSON object in one of these formats:
 
 1. To explore the codebase or fetch context (run a bash command):
    - Format: {"action": "bash", "content": "<shell command>"}
-   - Example: {"action": "bash", "content": "ls sympy/geometry"}
+   - Example: {"action": "bash", "content": "ls sklearn/metrics"}
    - Outputs from the command will be returned to you.
    - Only read-only commands are allowed; do not modify files yet.
 
 2. To submit your fix (unified diff format):
-   - Format: {"action": "patch", "content": "<unified diff>"}
-   - The patch MUST be a valid unified diff with EXACT line numbers from the file.
-   - Use ONLY ONE hunk per patch. If you need multiple changes, submit multiple patches.
-   - Before creating a patch, ALWAYS use "cat -n <file>" to see exact line numbers.
-
-   Example patch format:
-   {"action": "patch", "content": "--- a/path/to/file.py\\n+++ b/path/to/file.py\\n@@ -10,5 +10,5 @@\\n context line before\\n-old line to remove\\n+new line to add\\n context line after\\n another context\\n"}
-
-## CRITICAL Patch Rules
-
-1. Line numbers in @@ -X,Y +X,Z @@ MUST match the actual file. Use "cat -n" first!
-2. Include 3 lines of context before and after your change.
-3. Use ONLY ONE @@ hunk per patch. Multiple hunks cause failures.
-4. The "-" lines must EXACTLY match existing code (including whitespace).
-5. Use \\n for newlines in JSON string (not actual newlines).
+   - Format: {"action": "patch", "content": "
+     --- a/path/to/file.py
+     +++ b/path/to/file.py
+     @@ -10,7 +10,7 @@
+       context line
+     -old line to remove
+     +new line to add
+       context line
+     "}
+   - You may generate the patch as a minimal diff; it will be executed for you and output returned to you.
 
 ## Important Rules
 
 - Respond with ONLY the JSON object. No explanations, no markdown, no extra text.
-- Use bash commands to explore: ls, cat, grep, find, head, tail, etc.
+- Use bash commands to explore: ls, cat, grep, find, git log, git diff, etc.
 - The codebase is READ-ONLY. You cannot modify files with bash commands.
-- If your patch fails, use "cat -n <file> | head -n <end> | tail -n <count>" to see exact lines, then try again.
-
-## Execution Output Format
-
-After every bash command that you submit, you'll receive its execution output as follows:
-{
-  "cwd": "/workspace/repo/current/directory",
-  "stdout": "command output...",
-  "stderr": "any errors..."
-}
-
-Use 'cwd' to track your current location. You can use `cd` to navigate within the repo but never outside it.
+- When ready, submit a patch in unified diff format (like `git diff` output).
 """
 
 
