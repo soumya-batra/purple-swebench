@@ -363,9 +363,6 @@ Try using `cat` to view the exact current content of the file, then create a new
             TaskState.working, new_agent_text_message("Thinking...")
         )
 
-        # Rate limit delay for Gemini API
-        await asyncio.sleep(10)
-
         try:
             print("green response > ", self.messages[-1]["content"])
 
@@ -409,20 +406,8 @@ Try using `cat` to view the exact current content of the file, then create a new
         # Parse and return response
         try:
             # Extract first valid JSON object from response
-            print(f"\n[DEBUG] === JSON PARSING START ===")
-            print(f"[DEBUG] Raw response type: {type(response)}")
-            print(f"[DEBUG] Raw response length: {len(response) if response else 0}")
-            print(f"[DEBUG] Raw response first 500 chars:\n{response[:500] if response else 'None'}")
-            print(f"[DEBUG] Raw response repr: {repr(response[:200]) if response else 'None'}")
-
             clean_response = extract_json(response)
-            print(f"\n[DEBUG] After extract_json:")
-            print(f"[DEBUG] Cleaned response length: {len(clean_response)}")
-            print(f"[DEBUG] Cleaned response first 500 chars:\n{clean_response[:500]}")
-            print(f"[DEBUG] Cleaned response repr: {repr(clean_response[:200])}")
-
             response_json = json.loads(clean_response)
-            print(f"[DEBUG] JSON parsed successfully: {list(response_json.keys())}")
 
             action = response_json.get(RESPONSE_KEY, "unknown")
             content = response_json.get(CONTENT_KEY, "")
@@ -430,7 +415,8 @@ Try using `cat` to view the exact current content of the file, then create a new
             if action == "patch":
                 content = self._format_patch(content)
 
-            print(f"\n\npurple response > action={action}, content={content[:100]}...")
+            print(f"\n\npurple response > action={action}, content={content}")
+            
 
             await updater.add_artifact(
                 name=action,
