@@ -17,20 +17,131 @@ from messenger import Messenger
 import litellm
 
 from dotenv import load_dotenv
+import asyncio
 import json
 import re
 
 load_dotenv()
 
 
-def strip_markdown_json(text: str) -> str:
-    """Strip markdown code blocks from JSON response."""
+def fix_json_newlines(text: str) -> str:
+    """Fix unescaped newlines inside JSON string values."""
+    result = []
+    in_string = False
+    escape = False
+    i = 0
+
+    while i < len(text):
+        char = text[i]
+
+        if escape:
+            result.append(char)
+            escape = False
+            i += 1
+            continue
+
+        if char == '\\':
+            result.append(char)
+            escape = True
+            i += 1
+            continue
+
+        if char == '"':
+            result.append(char)
+            in_string = not in_string
+            i += 1
+            continue
+
+        if in_string and char == '\n':
+            # Replace literal newline with escaped newline
+            result.append('\\n')
+            i += 1
+            continue
+
+        if in_string and char == '\r':
+            # Skip carriage returns
+            i += 1
+            continue
+
+        if in_string and char == '\t':
+            # Replace literal tab with escaped tab
+            result.append('\\t')
+            i += 1
+            continue
+
+        result.append(char)
+        i += 1
+
+    return ''.join(result)
+
+
+def fix_triple_quotes(text: str) -> str:
+    """Fix Python-style triple quotes in JSON (Claude sometimes uses these)."""
+    # Replace """ with " and handle the content properly
+    # Pattern: "key": """content""" -> "key": "content"
+    pattern = r':\s*"""([\s\S]*?)"""'
+
+    def replace_triple(match):
+        content = match.group(1)
+        # Escape any unescaped quotes in the content
+        content = content.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '').replace('\t', '\\t')
+        return f': "{content}"'
+
+    return re.sub(pattern, replace_triple, text)
+
+
+def extract_json(text: str) -> str:
+    """Extract first valid JSON object from text, handling markdown and extra content."""
+    text = text.strip()
+
     # Remove ```json ... ``` or ``` ... ``` wrappers
     pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
     match = re.search(pattern, text)
     if match:
-        return match.group(1).strip()
-    return text.strip()
+        text = match.group(1).strip()
+
+    # Fix triple quotes before processing
+    text = fix_triple_quotes(text)
+
+    # Find the first complete JSON object by matching braces
+    if not text.startswith('{'):
+        # Try to find JSON object in the text
+        start = text.find('{')
+        if start == -1:
+            return text
+        text = text[start:]
+
+    # Balance braces to find complete JSON object
+    depth = 0
+    in_string = False
+    escape = False
+    end = 0
+
+    for i, char in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if char == '\\' and in_string:
+            escape = True
+            continue
+        if char == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    if end > 0:
+        text = text[:end]
+
+    # Fix unescaped newlines in string values
+    return fix_json_newlines(text)
 
 
 # Response format keys
@@ -48,30 +159,33 @@ You MUST respond with a single JSON object in one of these formats:
 
 1. To explore the codebase or fetch context (run a bash command):
    - Format: {"action": "bash", "content": "<shell command>"}
-   - Example: {"action": "bash", "content": "ls sklearn/metrics"}
+   - Example: {"action": "bash", "content": "ls sympy/geometry"}
    - Outputs from the command will be returned to you.
    - Only read-only commands are allowed; do not modify files yet.
 
 2. To submit your fix (unified diff format):
    - Format: {"action": "patch", "content": "<unified diff>"}
-   - Example: {"action": "patch", "content": "
---- a/path/to/file.py
-+++ b/path/to/file.py
-@@ -10,7 +10,7 @@
- context line
--old line to remove
-+new line to add
- context line
-"}
-   - You may generate the patch as a minimal diff; it will be executed for you and output returned to you.
+   - The patch MUST be a valid unified diff with EXACT line numbers from the file.
+   - Use ONLY ONE hunk per patch. If you need multiple changes, submit multiple patches.
+   - Before creating a patch, ALWAYS use "cat -n <file>" to see exact line numbers.
+
+   Example patch format:
+   {"action": "patch", "content": "--- a/path/to/file.py\\n+++ b/path/to/file.py\\n@@ -10,5 +10,5 @@\\n context line before\\n-old line to remove\\n+new line to add\\n context line after\\n another context\\n"}
+
+## CRITICAL Patch Rules
+
+1. Line numbers in @@ -X,Y +X,Z @@ MUST match the actual file. Use "cat -n" first!
+2. Include 3 lines of context before and after your change.
+3. Use ONLY ONE @@ hunk per patch. Multiple hunks cause failures.
+4. The "-" lines must EXACTLY match existing code (including whitespace).
+5. Use \\n for newlines in JSON string (not actual newlines).
 
 ## Important Rules
 
 - Respond with ONLY the JSON object. No explanations, no markdown, no extra text.
-- Use bash commands to explore: ls, cat, grep, find, git log, git diff, etc.
+- Use bash commands to explore: ls, cat, grep, find, head, tail, etc.
 - The codebase is READ-ONLY. You cannot modify files with bash commands.
-- When ready, submit a patch in unified diff format (like `git diff` output).
-- If your patch fails, you'll receive the error. Analyze it and try again.
+- If your patch fails, use "cat -n <file> | head -n <end> | tail -n <count>" to see exact lines, then try again.
 
 ## Execution Output Format
 
@@ -252,15 +366,40 @@ Try using `cat` to view the exact current content of the file, then create a new
             TaskState.working, new_agent_text_message("Thinking...")
         )
 
+        # Rate limit delay for Gemini API
+        await asyncio.sleep(10)
+
         try:
             print("green response > ", self.messages[-1]["content"])
-            completion = litellm.completion(
-                model="openrouter/google/gemma-3-27b-it:free",
-                messages=self.messages,
-            )
-            response = completion.choices[0].message.content
+
+            # Retry with exponential backoff for overloaded/rate-limited APIs
+            max_retries = 5
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    completion = litellm.completion(
+                        model="gemini/gemini-2.5-flash-lite",
+                        messages=self.messages,
+                        response_format={"type": "json_object"},
+                    )
+                    response = completion.choices[0].message.content
+                    print(f"\n[DEBUG] Raw LLM response: {response[:200]}...")
+                    break
+                except Exception as retry_err:
+                    err_str = str(retry_err)
+                    if "503" in err_str or "overloaded" in err_str.lower() or "429" in err_str or "rate" in err_str.lower():
+                        wait_time = (2 ** attempt) * 5  # 5, 10, 20, 40, 80 seconds
+                        print(f"\n[DEBUG] Retry {attempt + 1}/{max_retries}: waiting {wait_time}s due to: {err_str[:100]}")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        raise retry_err
+
+            if response is None:
+                raise Exception("Max retries exceeded - API still unavailable")
+
         except Exception as e:
             # Handle LLM errors
+            print(f"\n[DEBUG] LLM error: {e}")
             await updater.add_artifact(
                 name="error",
                 parts=[Part(root=TextPart(text=f"LLM error: {str(e)}"))],
@@ -272,24 +411,43 @@ Try using `cat` to view the exact current content of the file, then create a new
 
         # Parse and return response
         try:
-            # Strip markdown code blocks if present
-            clean_response = strip_markdown_json(response)
+            # Extract first valid JSON object from response
+            print(f"\n[DEBUG] === JSON PARSING START ===")
+            print(f"[DEBUG] Raw response type: {type(response)}")
+            print(f"[DEBUG] Raw response length: {len(response) if response else 0}")
+            print(f"[DEBUG] Raw response first 500 chars:\n{response[:500] if response else 'None'}")
+            print(f"[DEBUG] Raw response repr: {repr(response[:200]) if response else 'None'}")
+
+            clean_response = extract_json(response)
+            print(f"\n[DEBUG] After extract_json:")
+            print(f"[DEBUG] Cleaned response length: {len(clean_response)}")
+            print(f"[DEBUG] Cleaned response first 500 chars:\n{clean_response[:500]}")
+            print(f"[DEBUG] Cleaned response repr: {repr(clean_response[:200])}")
+
             response_json = json.loads(clean_response)
+            print(f"[DEBUG] JSON parsed successfully: {list(response_json.keys())}")
+
             action = response_json.get(RESPONSE_KEY, "unknown")
             content = response_json.get(CONTENT_KEY, "")
 
             if action == "patch":
                 content = self._format_patch(content)
 
-            print("purple response > ", content)
+            print(f"\n\npurple response > action={action}, content={content[:100]}...")
 
             await updater.add_artifact(
                 name=action,
                 parts=[Part(root=TextPart(text=content))],
             )
 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"\n[DEBUG] === JSON DECODE ERROR ===")
+            print(f"[DEBUG] Error: {e}")
+            print(f"[DEBUG] Error position: line {e.lineno}, col {e.colno}, char {e.pos}")
+            print(f"[DEBUG] Problematic area: {repr(clean_response[max(0,e.pos-20):e.pos+20]) if 'clean_response' in dir() else 'N/A'}")
             # If LLM didn't return valid JSON, try to extract it
+            print(f"\n[DEBUG] JSON parse error: {e}")
+            print(f"[DEBUG] Response was: {response[:300]}")
             await updater.add_artifact(
                 name="error",
                 parts=[
