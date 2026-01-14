@@ -164,15 +164,16 @@ You MUST respond with a single JSON object in one of these formats:
    - Only read-only commands are allowed; do not modify files yet.
 
 2. To submit your fix (unified diff format):
-   - Format: {"action": "patch", "content": "
-     --- a/path/to/file.py
-     +++ b/path/to/file.py
-     @@ -10,7 +10,7 @@
-       context line
-     -old line to remove
-     +new line to add
-       context line
-     "}
+   - Format: {"action": "patch", "content": "<unified diff>"}
+   - Example: {"action": "patch", "content": "
+--- a/path/to/file.py
++++ b/path/to/file.py
+@@ -10,7 +10,7 @@
+ context line
+-old line to remove
++new line to add
+ context line
+"}
    - You may generate the patch as a minimal diff; it will be executed for you and output returned to you.
 
 ## Important Rules
@@ -181,6 +182,18 @@ You MUST respond with a single JSON object in one of these formats:
 - Use bash commands to explore: ls, cat, grep, find, git log, git diff, etc.
 - The codebase is READ-ONLY. You cannot modify files with bash commands.
 - When ready, submit a patch in unified diff format (like `git diff` output).
+- If your patch fails, you'll receive the error. Analyze it and try again.
+
+## Execution Output Format
+
+After every bash command that you submit, you'll receive its execution output as follows:
+{
+  "cwd": "/workspace/repo/current/directory",
+  "stdout": "command output...",
+  "stderr": "any errors..."
+}
+
+Use 'cwd' to track your current location. You can use `cd` to navigate within the repo but never outside it.
 """
 
 
