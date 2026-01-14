@@ -92,6 +92,10 @@ class Agent:
         self.messages = []
         self.task_data = None
 
+    def _format_patch(self, patch_text: str) -> str:
+        # append '\n' at the end of patch
+        return patch_text if patch_text.endswith('\n') else patch_text + "\n"
+    
     def _parse_task_data(self, input_text: str) -> dict | None:
         """Parse raw task data from Green Agent."""
         try:
@@ -170,21 +174,12 @@ The following tests are currently failing and should pass after your fix:
         stdout = result.get("stdout", "")
         stderr = result.get("stderr", "")
 
-        parts = [f"Current Working Directory: {cwd}"]
-
         if stdout:
             # Truncate very long outputs
             if len(stdout) > 8000:
                 stdout = stdout[:8000] + "\n... [output truncated]"
-            parts.append(f"Output:\n{stdout}")
 
-        if stderr:
-            parts.append(f"Errors:\n{stderr}")
-
-        if not stdout and not stderr:
-            parts.append("(no output)")
-
-        return "\n\n".join(parts)
+        return json.dumps({'cwd': cwd, 'stdout': stdout, 'stderr': stderr}, indent=2)
 
     def _format_patch_failure_for_llm(self, result: dict) -> str:
         """Format patch failure for the LLM to retry."""
@@ -282,6 +277,9 @@ Try using `cat` to view the exact current content of the file, then create a new
             response_json = json.loads(clean_response)
             action = response_json.get(RESPONSE_KEY, "unknown")
             content = response_json.get(CONTENT_KEY, "")
+
+            if action == "patch":
+                content = self._format_patch(content)
 
             print("purple response > ", content)
 
