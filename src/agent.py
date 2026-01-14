@@ -18,8 +18,19 @@ import litellm
 
 from dotenv import load_dotenv
 import json
+import re
 
 load_dotenv()
+
+
+def strip_markdown_json(text: str) -> str:
+    """Strip markdown code blocks from JSON response."""
+    # Remove ```json ... ``` or ``` ... ``` wrappers
+    pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
 
 
 # Response format keys
@@ -244,9 +255,8 @@ Try using `cat` to view the exact current content of the file, then create a new
         try:
             print("green response > ", self.messages[-1]["content"])
             completion = litellm.completion(
-                model="gemini/gemini-2.5-flash-lite",  # "openrouter/tngtech/deepseek-r1t-chimera:free", #"openrouter/z-ai/glm-4.5-air:free", #openrouter/qwen/qwen3-coder:free",
+                model="openrouter/google/gemma-3-27b-it:free",
                 messages=self.messages,
-                response_format={"type": "json_object"},
             )
             response = completion.choices[0].message.content
         except Exception as e:
@@ -262,7 +272,9 @@ Try using `cat` to view the exact current content of the file, then create a new
 
         # Parse and return response
         try:
-            response_json = json.loads(response)
+            # Strip markdown code blocks if present
+            clean_response = strip_markdown_json(response)
+            response_json = json.loads(clean_response)
             action = response_json.get(RESPONSE_KEY, "unknown")
             content = response_json.get(CONTENT_KEY, "")
 
