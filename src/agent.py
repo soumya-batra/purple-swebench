@@ -15,6 +15,7 @@ from a2a.utils import get_message_text, new_agent_text_message
 
 from messenger import Messenger
 import litellm
+
 from dotenv import load_dotenv
 import json
 
@@ -42,7 +43,7 @@ You MUST respond with a single JSON object in one of these formats:
 
 2. To submit your fix (unified diff format):
    - Format: {"action": "patch", "content": "<unified diff>"}
-   - Example: {"action": "patch", "content": "```
+   - Example: {"action": "patch", "content": "
 --- a/path/to/file.py
 +++ b/path/to/file.py
 @@ -10,7 +10,7 @@
@@ -50,7 +51,7 @@ You MUST respond with a single JSON object in one of these formats:
 -old line to remove
 +new line to add
  context line
-```"}
+"}
    - You may generate the patch as a minimal diff; it will be executed for you and output returned to you.
 
 ## Important Rules
@@ -70,10 +71,7 @@ After every bash command that you submit, you'll receive its execution output as
   "stderr": "any errors..."
 }
 
-Use the 'cwd' key to track your current location. You can use `cd` to navigate within the repo but never outside it.
-
-Here are the Issue Details:
-
+Use 'cwd' to track your current location. You can use `cd` to navigate within the repo but never outside it.
 """
 
 
@@ -122,14 +120,15 @@ class Agent:
 
     def _build_initial_prompt(self, task_data: dict) -> str:
         """Build the initial user prompt from task data."""
-        problem_statement = task_data.get("problem_statement", "No description provided")
+        problem_statement = task_data.get(
+            "problem_statement", "No description provided"
+        )
         hints = task_data.get("hints_text", "")
-        repo = task_data.get("repo", "unknown")
+        cwd = task_data.get("cwd", "unknown")
         python_version = task_data.get("python_version", "3.9")
-        instance_id = task_data.get("instance_id", "unknown")
         fail_to_pass = task_data.get("fail_to_pass", [])
 
-        prompt = f"""Current Working Directory (cwd): {repo}
+        prompt = f"""Current Working Directory (cwd): {cwd}
 Python Version: {python_version}
 
 ## Issue Description
@@ -160,7 +159,7 @@ The following tests are currently failing and should pass after your fix:
         stdout = result.get("stdout", "")
         stderr = result.get("stderr", "")
 
-        parts = [f"Current directory: {cwd}"]
+        parts = [f"Current Working Directory: {cwd}"]
 
         if stdout:
             # Truncate very long outputs
@@ -183,7 +182,7 @@ The following tests are currently failing and should pass after your fix:
 
         return f"""Patch application FAILED.
 
-Current directory: {cwd}
+Current Working Directory: {cwd}
 
 Error details:
 {stderr}
@@ -207,7 +206,6 @@ Try using `cat` to view the exact current content of the file, then create a new
         4. Error feedback (JSON with error message)
         """
         input_text = get_message_text(message)
-        print(f"input > {input_text[:200]}...")
 
         await updater.update_status(
             TaskState.working, new_agent_text_message("Processing...")
@@ -249,10 +247,11 @@ Try using `cat` to view the exact current content of the file, then create a new
         )
 
         try:
+            print("green response > ", self.messages[-1]["content"])
             completion = litellm.completion(
-                model="openrouter/tngtech/deepseek-r1t-chimera:free",
+                model="gemini/gemini-3-flash-preview",  # "openrouter/tngtech/deepseek-r1t-chimera:free", #"openrouter/z-ai/glm-4.5-air:free", #openrouter/qwen/qwen3-coder:free",
                 messages=self.messages,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
             )
             response = completion.choices[0].message.content
         except Exception as e:
@@ -265,7 +264,6 @@ Try using `cat` to view the exact current content of the file, then create a new
 
         # Add assistant response to conversation history
         self.messages.append({"role": "assistant", "content": response})
-        print(f"response > {response[:200]}...")
 
         # Parse and return response
         try:
@@ -273,13 +271,18 @@ Try using `cat` to view the exact current content of the file, then create a new
             action = response_json.get(RESPONSE_KEY, "unknown")
             content = response_json.get(CONTENT_KEY, "")
 
+            print("purple response > ", content)
+
             await updater.add_artifact(
                 name=action,
                 parts=[Part(root=TextPart(text=content))],
             )
+
         except json.JSONDecodeError:
             # If LLM didn't return valid JSON, try to extract it
             await updater.add_artifact(
                 name="error",
-                parts=[Part(root=TextPart(text=f"Invalid JSON response: {response[:500]}"))],
+                parts=[
+                    Part(root=TextPart(text=f"Invalid JSON response: {response[:500]}"))
+                ],
             )
