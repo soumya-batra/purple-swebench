@@ -163,7 +163,14 @@ You MUST respond with a single JSON object in one of these formats:
    - Outputs from the command will be returned to you.
    - Only read-only commands are allowed; do not modify files yet.
 
-2. To submit your fix (unified diff format):
+2. To test changes in debug mode (changes are NOT saved):
+   - Format: {"action": "debug", "content": "<bash command>"}
+   - Example: {"action": "debug", "content": "sed -i 's/old/new/' file.py && python -m pytest tests/"}
+   - In debug mode, you can modify files (vim, sed, echo >>, etc.) and run tests.
+   - All changes are rolled back after the command completes.
+   - Use this to experiment with fixes before submitting a final patch.
+
+3. To submit your fix (unified diff format):
    - Format: {"action": "patch", "content": "<unified diff>"}
    - Example 1 (single file patch): {"action": "patch", "content": "
 diff --git a/path/to/file.py b/path/to/file.py
