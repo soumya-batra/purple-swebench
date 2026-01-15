@@ -163,7 +163,13 @@ You MUST respond with a single JSON object in one of these formats:
    - Outputs from the command will be returned to you.
    - Only read-only commands are allowed; do not modify files yet.
 
-2. To submit your fix (unified diff format):
+2. To test a patch before submitting (debug mode - changes are NOT saved):
+   - Format: {"action": "debug", "content": {"patch": "<unified diff>", "command": "<test command>"}}
+   - Example: {"action": "debug", "content": {"patch": "--- a/file.py\n+++ b/file.py\n@@ -1 +1 @@\n-old\n+new", "command": "python -m pytest tests/test_file.py -xvs"}}
+   - The patch is applied temporarily, command runs, then changes are rolled back.
+   - Use this to test your fix before final submission.
+
+3. To submit your fix (unified diff format):
    - Format: {"action": "patch", "content": "<unified diff>"}
    - Example 1 (single file patch): {"action": "patch", "content": "
 diff --git a/path/to/file.py b/path/to/file.py
