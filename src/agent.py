@@ -17,20 +17,131 @@ from messenger import Messenger
 import litellm
 
 from dotenv import load_dotenv
+import asyncio
 import json
 import re
 
 load_dotenv()
 
 
-def strip_markdown_json(text: str) -> str:
-    """Strip markdown code blocks from JSON response."""
+def fix_json_newlines(text: str) -> str:
+    """Fix unescaped newlines inside JSON string values."""
+    result = []
+    in_string = False
+    escape = False
+    i = 0
+
+    while i < len(text):
+        char = text[i]
+
+        if escape:
+            result.append(char)
+            escape = False
+            i += 1
+            continue
+
+        if char == '\\':
+            result.append(char)
+            escape = True
+            i += 1
+            continue
+
+        if char == '"':
+            result.append(char)
+            in_string = not in_string
+            i += 1
+            continue
+
+        if in_string and char == '\n':
+            # Replace literal newline with escaped newline
+            result.append('\\n')
+            i += 1
+            continue
+
+        if in_string and char == '\r':
+            # Skip carriage returns
+            i += 1
+            continue
+
+        if in_string and char == '\t':
+            # Replace literal tab with escaped tab
+            result.append('\\t')
+            i += 1
+            continue
+
+        result.append(char)
+        i += 1
+
+    return ''.join(result)
+
+
+def fix_triple_quotes(text: str) -> str:
+    """Fix Python-style triple quotes in JSON (Claude sometimes uses these)."""
+    # Replace """ with " and handle the content properly
+    # Pattern: "key": """content""" -> "key": "content"
+    pattern = r':\s*"""([\s\S]*?)"""'
+
+    def replace_triple(match):
+        content = match.group(1)
+        # Escape any unescaped quotes in the content
+        content = content.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '').replace('\t', '\\t')
+        return f': "{content}"'
+
+    return re.sub(pattern, replace_triple, text)
+
+
+def extract_json(text: str) -> str:
+    """Extract first valid JSON object from text, handling markdown and extra content."""
+    text = text.strip()
+
     # Remove ```json ... ``` or ``` ... ``` wrappers
     pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
     match = re.search(pattern, text)
     if match:
-        return match.group(1).strip()
-    return text.strip()
+        text = match.group(1).strip()
+
+    # Fix triple quotes before processing
+    text = fix_triple_quotes(text)
+
+    # Find the first complete JSON object by matching braces
+    if not text.startswith('{'):
+        # Try to find JSON object in the text
+        start = text.find('{')
+        if start == -1:
+            return text
+        text = text[start:]
+
+    # Balance braces to find complete JSON object
+    depth = 0
+    in_string = False
+    escape = False
+    end = 0
+
+    for i, char in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if char == '\\' and in_string:
+            escape = True
+            continue
+        if char == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    if end > 0:
+        text = text[:end]
+
+    # Fix unescaped newlines in string values
+    return fix_json_newlines(text)
 
 
 # Response format keys
@@ -254,13 +365,35 @@ Try using `cat` to view the exact current content of the file, then create a new
 
         try:
             print("green response > ", self.messages[-1]["content"])
-            completion = litellm.completion(
-                model="openrouter/google/gemma-3-27b-it:free",
-                messages=self.messages,
-            )
-            response = completion.choices[0].message.content
+
+            # Retry with exponential backoff for overloaded/rate-limited APIs
+            max_retries = 5
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    completion = litellm.completion(
+                        model="gemini/gemini-2.5-flash-lite",
+                        messages=self.messages,
+                        response_format={"type": "json_object"},
+                    )
+                    response = completion.choices[0].message.content
+                    print(f"\n[DEBUG] Raw LLM response: {response[:200]}...")
+                    break
+                except Exception as retry_err:
+                    err_str = str(retry_err)
+                    if "503" in err_str or "overloaded" in err_str.lower() or "429" in err_str or "rate" in err_str.lower():
+                        wait_time = (2 ** attempt) * 5  # 5, 10, 20, 40, 80 seconds
+                        print(f"\n[DEBUG] Retry {attempt + 1}/{max_retries}: waiting {wait_time}s due to: {err_str[:100]}")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        raise retry_err
+
+            if response is None:
+                raise Exception("Max retries exceeded - API still unavailable")
+
         except Exception as e:
             # Handle LLM errors
+            print(f"\n[DEBUG] LLM error: {e}")
             await updater.add_artifact(
                 name="error",
                 parts=[Part(root=TextPart(text=f"LLM error: {str(e)}"))],
@@ -272,24 +405,32 @@ Try using `cat` to view the exact current content of the file, then create a new
 
         # Parse and return response
         try:
-            # Strip markdown code blocks if present
-            clean_response = strip_markdown_json(response)
+            # Extract first valid JSON object from response
+            clean_response = extract_json(response)
             response_json = json.loads(clean_response)
+
             action = response_json.get(RESPONSE_KEY, "unknown")
             content = response_json.get(CONTENT_KEY, "")
 
             if action == "patch":
                 content = self._format_patch(content)
 
-            print("purple response > ", content)
+            print(f"\n\npurple response > action={action}, content={content}")
+            
 
             await updater.add_artifact(
                 name=action,
                 parts=[Part(root=TextPart(text=content))],
             )
 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"\n[DEBUG] === JSON DECODE ERROR ===")
+            print(f"[DEBUG] Error: {e}")
+            print(f"[DEBUG] Error position: line {e.lineno}, col {e.colno}, char {e.pos}")
+            print(f"[DEBUG] Problematic area: {repr(clean_response[max(0,e.pos-20):e.pos+20]) if 'clean_response' in dir() else 'N/A'}")
             # If LLM didn't return valid JSON, try to extract it
+            print(f"\n[DEBUG] JSON parse error: {e}")
+            print(f"[DEBUG] Response was: {response[:300]}")
             await updater.add_artifact(
                 name="error",
                 parts=[
