@@ -165,7 +165,8 @@ You MUST respond with a single JSON object in one of these formats:
 
 2. To submit your fix (unified diff format):
    - Format: {"action": "patch", "content": "<unified diff>"}
-   - Example: {"action": "patch", "content": "
+   - Example 1 (single file patch): {"action": "patch", "content": "
+diff --git a/path/to/file.py b/path/to/file.py
 --- a/path/to/file.py
 +++ b/path/to/file.py
 @@ -10,7 +10,7 @@
@@ -173,6 +174,27 @@ You MUST respond with a single JSON object in one of these formats:
 -old line to remove
 +new line to add
  context line
+"}
+    - Example 2 (multi files patch): {"action": "patch", "content": "
+diff --git a/pkg/foo.py b/pkg/foo.py
+--- a/pkg/foo.py
++++ b/pkg/foo.py
+@@ -42,7 +42,9 @@ def f(x):
+     if x is None:
+         return 0
+-    return bar(x)
++    y = normalize(x)
++    return bar(y)
+
+diff --git a/pkg/bar.py b/pkg/bar.py
+--- a/pkg/bar.py
++++ b/pkg/bar.py
+@@ -10,6 +10,8 @@ def normalize(x):
+     if x < 0:
+         raise ValueError()
++    if x == 0:
++        return 1
+     return x
 "}
    - You may generate the patch as a minimal diff; it will be executed for you and output returned to you.
 
