@@ -83,8 +83,10 @@ def fix_triple_quotes(text: str) -> str:
 
     def replace_triple(match):
         content = match.group(1)
-        # Escape any unescaped quotes in the content
-        content = content.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '').replace('\t', '\\t')
+        # Only escape unescaped quotes, don't double-escape backslashes
+        content = content.replace('\r', '').replace('\n', '\\n').replace('\t', '\\t')
+        # Escape unescaped double quotes (not already escaped)
+        content = re.sub(r'(?<!\\)"', '\\"', content)
         return f': "{content}"'
 
     return re.sub(pattern, replace_triple, text)
@@ -457,12 +459,39 @@ Try using `cat` to view the exact current content of the file, then create a new
             print(f"[DEBUG] Error: {e}")
             print(f"[DEBUG] Error position: line {e.lineno}, col {e.colno}, char {e.pos}")
             print(f"[DEBUG] Problematic area: {repr(clean_response[max(0,e.pos-20):e.pos+20]) if 'clean_response' in dir() else 'N/A'}")
-            # If LLM didn't return valid JSON, try to extract it
             print(f"\n[DEBUG] JSON parse error: {e}")
             print(f"[DEBUG] Response was: {response[:300]}")
-            await updater.add_artifact(
-                name="error",
-                parts=[
-                    Part(root=TextPart(text=f"Invalid JSON response: {response[:500]}"))
-                ],
-            )
+
+            # Fallback: try to interpret non-JSON response
+            response_stripped = response.strip()
+
+            # Check if it looks like a bash command (common patterns)
+            bash_patterns = [
+                r'^(ls|cat|grep|find|cd|pwd|echo|head|tail|wc|git|python|pip)\b',
+                r'^[./]',  # Starts with ./ or /
+            ]
+            is_likely_bash = any(re.match(p, response_stripped) for p in bash_patterns)
+
+            # Check if it looks like a patch
+            is_likely_patch = response_stripped.startswith('diff --git') or response_stripped.startswith('--- ')
+
+            if is_likely_patch:
+                print(f"\n[DEBUG] Fallback: treating as patch")
+                await updater.add_artifact(
+                    name="patch",
+                    parts=[Part(root=TextPart(text=self._format_patch(response_stripped)))],
+                )
+            elif is_likely_bash:
+                print(f"\n[DEBUG] Fallback: treating as bash command")
+                await updater.add_artifact(
+                    name="bash",
+                    parts=[Part(root=TextPart(text=response_stripped))],
+                )
+            else:
+                # Send error feedback to help LLM correct itself
+                await updater.add_artifact(
+                    name="error",
+                    parts=[
+                        Part(root=TextPart(text=f"Invalid JSON response. Please respond with valid JSON: {{\"action\": \"bash\"|\"patch\", \"content\": \"...\"}}"))
+                    ],
+                )
