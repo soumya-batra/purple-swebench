@@ -380,7 +380,7 @@ Try using `cat` to view the exact current content of the file, then create a new
 
         # Check if this is an error feedback
         elif error_feedback := self._parse_error_feedback(input_text):
-            user_content = f"Error: {error_feedback.get('message', error_feedback.get('error', 'Unknown error'))}\n\nPlease respond with valid JSON: {{\"action\": \"bash\"|\"patch\", \"content\": \"...\"}}"
+            user_content = f"Error: {error_feedback.get('message', error_feedback.get('error', 'Unknown error'))}\n\nPlease respond with valid JSON: {{\"action\": \"bash\"| \"debug\" | \"patch\", \"content\": \"...\"}}"
 
         # Fallback - treat as raw text
         else:
