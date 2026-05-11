@@ -81,8 +81,8 @@ def make_message(task: dict) -> Message:
 async def main() -> None:
     # Verify env
     import os
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("ERROR: OPENAI_API_KEY not set", file=sys.stderr)
+    if not os.environ.get("OPENAI_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ERROR: OPENAI_API_KEY or ANTHROPIC_API_KEY must be set", file=sys.stderr)
         sys.exit(1)
 
     # Verify docker
@@ -113,6 +113,17 @@ async def main() -> None:
                 print(f"  patch preview:\n{preview}", file=sys.stderr)
         except Exception:
             print(f"  artifact name={name} text={text[:200]}", file=sys.stderr)
+
+    # Write debug output with full LLM history
+    debug_path = Path(__file__).resolve().parents[1] / "debug_smoke.json"
+    debug = {
+        "instance_id": TASK["instance_id"],
+        "statuses": [(str(s), t) for s, t in updater.statuses],
+        "artifacts": [(n, t) for n, t in updater.artifacts],
+        "history": getattr(agent, "_last_history", []),
+    }
+    debug_path.write_text(json.dumps(debug, indent=2, default=str))
+    print(f"\n[smoke] debug written to {debug_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

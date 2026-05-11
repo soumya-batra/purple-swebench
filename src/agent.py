@@ -12,16 +12,11 @@ arXiv 2512.24601). Each task runs to completion in one A2A turn:
        - repl(code):           persistent in-process Python over `context` and
                                 `llm_query`; for slicing, summarizing, grepping
                                 large stored content without burning prompt tokens
-       - final(patch):         submit a unified diff. We git-apply --check it
+       - final(patch):   submit a unified diff. We git-apply --check it
                                 first; if invalid the model gets the error and
                                 can try again
   4. Up to 30 LLM steps per task. Patch returned via add_artifact as {"patch":...}
 
-This sidesteps every previous failure mode:
-  - No fixed file-pick (model can grep/find/cat freely)
-  - Long contents (file dumps, pytest output) live in REPL `context`, not prompt
-  - llm_query lets the model summarize/extract from any chunk on demand
-  - final() validates before submitting; the model gets to revise on apply errors
 """
 from __future__ import annotations
 
@@ -35,6 +30,7 @@ import random
 import re
 import subprocess
 import sys
+import time
 import traceback
 import uuid
 from typing import Any
@@ -56,17 +52,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ROOT_MODEL = os.environ.get("ROOT_MODEL", "openai/gpt-4o")
-SUB_MODEL = os.environ.get("SUB_MODEL", "openai/gpt-4o-mini")
+ROOT_MODEL = os.environ.get("ROOT_MODEL", "claude-opus-4-7")
+SUB_MODEL = os.environ.get("SUB_MODEL", "claude-haiku-4-5-20251001")
 ROOT_MAX_TOKENS = 4096
 SUB_MAX_TOKENS = 4096
 
 # Resource caps per task
-MAX_INNER_STEPS = 30
-MAX_BASH = 30
-MAX_REPL = 20
-MAX_LLM_QUERY = 15
-MAX_FINAL_ATTEMPTS = 3
+MAX_INNER_STEPS = 50
+MAX_BASH = 40
+MAX_REPL = 30
+MAX_LLM_QUERY = 25
+MAX_FINAL_ATTEMPTS = 5
 LLM_OBS_TRUNCATE = 6000          # chat history shows truncated bash/repl output
 SUB_PROMPT_MAX_CHARS = 400_000   # max input to llm_query
 
@@ -104,6 +100,7 @@ You are inside a sandbox that has the repository checked out at /app, at the exa
    Submit your unified-diff patch. We will run `git apply --check` first.
    If invalid, you'll see the error and you must revise (call final again with
    a fixed patch). On valid, the task is done.
+   IMPORTANT: You MUST call final at least once every 10 steps. Submit your best hypothesis even if uncertain — you get feedback and can revise. An imperfect patch submitted early is far better than no patch at all.
 
 WORKING MEMORY MODEL (RLM — Recursive Language Models):
 The chat history accumulates fast on hard tasks. **Long file contents and test
@@ -147,7 +144,9 @@ DEBUGGING WORKFLOW (the way humans solve these):
 - Form a hypothesis. Patch.
 - final(patch). If apply fails, fix and retry.
 - After a successful apply, you can ALSO bash: run the failing tests to verify.
-  Then re-final with corrections if needed.
+  Then re-submit with corrections if needed.
+
+BUDGET: You have at most {max_steps} total tool calls for this task. Use them wisely.
 
 DISCIPLINE:
 - One tool per response.
@@ -157,7 +156,7 @@ DISCIPLINE:
 - Include 3 lines of context above and below each hunk.
 - Make minimal changes; don't break existing tests.
 - DO NOT submit empty patches. Commit to a hypothesis even if uncertain.
-- When confident, call final. Don't loop forever.
+- When reasonably confident, call final. Don't loop forever.
 """
 
 TOOLS: list[dict[str, Any]] = [
@@ -204,7 +203,9 @@ TOOLS: list[dict[str, Any]] = [
             "name": "final",
             "description": (
                 "Submit the unified-diff patch. Will be validated with git apply --check; "
-                "if invalid, you'll see the error and may call final again with a fix."
+                "if invalid, you'll see the error and may call final again with a fix. "
+                "You MUST call this at least once every 10 steps. Submit early and iterate. "
+                "NEVER submit an empty patch."
             ),
             "parameters": {
                 "type": "object",
@@ -282,7 +283,8 @@ class Agent:
             task = {"problem_statement": input_text}
 
         instance_id = task.get("instance_id", "?")
-        image_uri = task.get("docker_image") or task.get("image_uri") or task.get("image") or ""
+        image_uri = (task.get("docker_image") or task.get("image_uri")
+                     or task.get("image_name") or task.get("image") or "")
         base_commit = task.get("base_commit", "")
         repo = task.get("repo", "")
         logger.info(f"[{instance_id}] start image={image_uri!r} repo={repo!r}")
@@ -338,14 +340,18 @@ class Agent:
         # SWE-bench Pro images are amd64. Force platform so this works on
         # both x86_64 (GitHub Actions runners) and arm64 (Apple Silicon
         # local dev) hosts. Default network (bridge) — many tests need it.
+        # Use the dynamic linker directly to launch sleep — works around a
+        # broken ld-linux symlink in some SWE-bench images on Apple Silicon.
+        ld = "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
         rc, _, err = await asyncio.to_thread(
             _run,
             [
                 "docker", "run", "-d", "--rm",
                 "--name", name,
                 "--platform", "linux/amd64",
+                "--entrypoint", "",
                 image_uri,
-                "sleep", str(CONTAINER_LIFETIME_SEC),
+                ld, "/usr/bin/sleep", str(CONTAINER_LIFETIME_SEC),
             ],
             None,
             60,
@@ -354,6 +360,15 @@ class Agent:
             logger.error(f"[{instance_id}] docker run failed: {err[:500]}")
             return False
         logger.info(f"[{instance_id}] container started: {name}")
+        # Fix the broken absolute ld-linux symlink so subsequent docker exec
+        # commands can run bash/sh normally without the linker prefix.
+        await asyncio.to_thread(
+            _run,
+            ["docker", "exec", name, ld, "/usr/bin/ln", "-sf",
+             "../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+             "/usr/lib64/ld-linux-x86-64.so.2"],
+            None, 10,
+        )
         return True
 
     def _exec(self, name: str, cmd: list[str], timeout: int = EXEC_TIMEOUT) -> tuple[int, str, str]:
@@ -368,7 +383,7 @@ class Agent:
             return "/app"
         rc, out, _ = await asyncio.to_thread(
             self._exec, name,
-            ["sh", "-c", "find / -maxdepth 4 -name '.git' -type d 2>/dev/null | head -1"],
+            ["bash", "-c", "find / -maxdepth 4 -name '.git' -type d 2>/dev/null | head -1"],
             30,
         )
         if rc == 0 and out.strip():
@@ -391,6 +406,10 @@ class Agent:
         # Per-task state
         transcript: list[dict[str, Any]] = []
         bash_count = repl_count = llm_query_count = final_attempts = 0
+        last_final_step = -1
+        WALL_CLOCK_WARN_SEC = 25 * 60  # nudge at 25 min
+        WALL_CLOCK_HARD_SEC = 28 * 60  # force stop at 28 min
+        task_start = time.monotonic()
 
         # llm_query function injected into REPL globals
         def _llm_query(prompt: str) -> str:
@@ -403,7 +422,6 @@ class Agent:
                 resp = litellm.completion(
                     model=SUB_MODEL,
                     messages=[{"role": "user", "content": text}],
-                    temperature=0,
                     max_tokens=SUB_MAX_TOKENS,
                 )
                 return resp.choices[0].message.content or ""
@@ -441,16 +459,68 @@ class Agent:
         )
 
         history: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT.format(max_steps=MAX_INNER_STEPS)},
             {"role": "user", "content": initial_user},
         ]
 
         last_valid_patch = ""
 
+        PATCH_DEADLINE = 10
+        TOOLS_FINAL_ONLY = [t for t in TOOLS if t["function"]["name"] == "final"]
+
         for step in range(MAX_INNER_STEPS):
+            elapsed = time.monotonic() - task_start
+            steps_since_final = step - last_final_step
+            remaining = MAX_INNER_STEPS - step
+
+            # Hard wall-clock cutoff — return whatever we have
+            if elapsed >= WALL_CLOCK_HARD_SEC:
+                logger.info(f"[{instance_id}] wall-clock hard limit ({elapsed:.0f}s), returning patch len={len(last_valid_patch)}")
+                self._last_history = history
+                return last_valid_patch
+
+            # Decide whether to force a final call this step
+            force_final = False
+
+            if elapsed >= WALL_CLOCK_WARN_SEC:
+                force_final = True
+                mins_left = max(0, (CONTAINER_LIFETIME_SEC - elapsed)) / 60
+                history.append({
+                    "role": "user",
+                    "content": (
+                        f"WARNING: {mins_left:.0f} minutes remaining before timeout. "
+                        "You MUST call final NOW with your best patch."
+                    ),
+                })
+            elif steps_since_final >= PATCH_DEADLINE:
+                force_final = True
+                history.append({
+                    "role": "user",
+                    "content": (
+                        f"You have gone {steps_since_final} steps without calling final. "
+                        "Call final now with your best patch — you can revise if it fails."
+                    ),
+                })
+            elif 0 < remaining <= 5 and not last_valid_patch:
+                force_final = True
+                history.append({
+                    "role": "user",
+                    "content": (
+                        f"Only {remaining} steps remain and you have no patch. "
+                        "You MUST call final now."
+                    ),
+                })
+
+            step_tools = TOOLS_FINAL_ONLY if force_final else TOOLS
+            step_tool_choice = (
+                {"type": "function", "function": {"name": "final"}}
+                if force_final
+                else "required"
+            )
+
             await updater.update_status(
                 TaskState.working,
-                new_agent_text_message(f"[{instance_id}] step {step}"),
+                new_agent_text_message(f"[{instance_id}] step {step}{' [FORCING final]' if force_final else ''}"),
             )
 
             try:
@@ -458,10 +528,9 @@ class Agent:
                     litellm.completion,
                     model=ROOT_MODEL,
                     messages=history,
-                    temperature=0,
                     max_tokens=ROOT_MAX_TOKENS,
-                    tools=TOOLS,
-                    tool_choice="required",  # force a tool call every step
+                    tools=step_tools,
+                    tool_choice=step_tool_choice,
                 )
             except Exception as e:
                 err = str(e)
@@ -526,6 +595,7 @@ class Agent:
 
             if name == "final":
                 final_attempts += 1
+                last_final_step = step
                 patch = _normalize_patch(str(args.get("patch", "")))
                 if not patch:
                     tool_result_text = "Empty patch. You must submit a real unified diff."
@@ -541,6 +611,7 @@ class Agent:
                         for tc in extras:
                             history.append({"role": "tool", "tool_call_id": tc.id, "content": "[ignored]"})
                         logger.info(f"[{instance_id}] final accepted at step {step}, len={len(patch)}")
+                        self._last_history = history
                         return last_valid_patch
                     tool_result_text = (
                         f"git apply --check FAILED:\n{_truncate(err, 2000)}\n\n"
@@ -555,6 +626,7 @@ class Agent:
                         })
                         for tc in extras:
                             history.append({"role": "tool", "tool_call_id": tc.id, "content": "[ignored]"})
+                        self._last_history = history
                         return last_valid_patch
 
             elif name == "bash":
@@ -575,7 +647,7 @@ class Agent:
                         logger.info(f"[{instance_id}] step {step}: executing bash {cmd[:200]!r}")
                         rc, out, err = await asyncio.to_thread(
                             self._exec_input, container_name,
-                            ["sh", "-c", f"cd {repo_root} && {cmd}"], "", tmo,
+                            ["bash", "-c", f"cd {repo_root} && {cmd}"], "", tmo,
                         )
                         logger.info(f"[{instance_id}] step {step}: bash done rc={rc} stdout_len={len(out)} stderr_len={len(err)}")
                         # Store full in transcript
@@ -633,12 +705,13 @@ class Agent:
                 })
 
         logger.info(f"[{instance_id}] step cap reached, returning last patch len={len(last_valid_patch)}")
+        self._last_history = history
         return last_valid_patch
 
     async def _validate_patch(self, container_name: str, repo_root: str, patch: str) -> tuple[bool, str]:
         rc, _, err = await asyncio.to_thread(
             self._exec_input, container_name,
-            ["sh", "-c", f"cd {repo_root} && git apply --check -"],
+            ["bash", "-c", f"cd {repo_root} && git apply --check -"],
             patch, 60,
         )
         return rc == 0, err

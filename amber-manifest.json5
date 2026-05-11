@@ -5,21 +5,21 @@
   config_schema: {
     type: "object",
     properties: {
-      openai_api_key: {
+      anthropic_api_key: {
         type: "string",
-        title: "OpenAI API Key",
+        title: "Anthropic API Key",
         secret: true,
       },
     },
-    required: ["openai_api_key"],
+    required: ["anthropic_api_key"],
     additionalProperties: false,
   },
   program: {
-    image: "ghcr.io/zaidishahbaz1/purple-swebench:latest",
+    image: "docker.io/soumyabatra/purple-swebench:latest",
     entrypoint: "uv run --no-sync src/server.py --host 0.0.0.0 --port 9009",
     env: {
       PYTHONUNBUFFERED: "1",
-      OPENAI_API_KEY: "${config.openai_api_key}",
+      ANTHROPIC_API_KEY: "${config.anthropic_api_key}",
     },
     mounts: [
       { path: "/var/run/docker.sock", from: "framework.docker" },
